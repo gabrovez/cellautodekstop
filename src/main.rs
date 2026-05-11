@@ -18,6 +18,7 @@ struct CellularAutomataApp {
     selected_preset_index: usize,
     presets: Vec<presets::Preset>,
     show_controls: bool,
+    placing_mode: bool,
 }
 
 impl CellularAutomataApp {
@@ -48,6 +49,7 @@ impl CellularAutomataApp {
             selected_preset_index: selected_index,
             presets: presets_list,
             show_controls: true,
+            placing_mode: false,
         }
     }
 
@@ -95,10 +97,41 @@ impl CellularAutomataApp {
 
     fn select_preset(&mut self, index: usize) {
         self.selected_preset_index = index;
+        
+        if self.placing_mode {
+            return;
+        }
+
         if let Some(preset) = self.presets.get(index) {
             let _ = self.command_tx.send(EngineCommand::Stop);
             self.simulation.set_world(preset.to_world());
             self.center_on_world();
+        }
+    }
+
+    fn place_preset_at_cursor(&mut self, cursor_pos: egui::Pos2) {
+        if let Some(preset) = self.presets.get(self.selected_preset_index) {
+            if preset.cells.is_empty() { return; }
+            
+            let world_coord = self.screen_to_world(cursor_pos);
+            
+            let mut min_x = i32::MAX; let mut max_x = i32::MIN;
+            let mut min_y = i32::MAX; let mut max_y = i32::MIN;
+            for &(x, y) in &preset.cells {
+                if x < min_x { min_x = x; } if x > max_x { max_x = x; }
+                if y < min_y { min_y = y; } if y > max_y { max_y = y; }
+            }
+            let center_x = (min_x + max_x) / 2;
+            let center_y = (min_y + max_y) / 2;
+
+            let mut world = (*self.simulation.get_world()).clone();
+            
+            for &(dx, dy) in &preset.cells {
+                let coord = Coord::new(world_coord.x + dx - center_x, world_coord.y + dy - center_y);
+                world.set_cell(coord, true);
+            }
+            
+            self.simulation.set_world(world);
         }
     }
 
@@ -108,7 +141,13 @@ impl CellularAutomataApp {
             egui::Sense::click_and_drag(),
         );
 
-        if response.dragged_by(egui::PointerButton::Primary) {
+        if response.clicked_by(egui::PointerButton::Primary) && self.placing_mode {
+            if let Some(cursor_pos) = response.hover_pos() {
+                self.place_preset_at_cursor(cursor_pos);
+            }
+        }    
+
+        if response.dragged_by(egui::PointerButton::Primary) && !self.placing_mode {
             self.view_offset += response.drag_delta();
         }
 
@@ -142,15 +181,53 @@ impl CellularAutomataApp {
             let cell_rect = egui::Rect::from_min_size(pos, egui::vec2(size.max(1.0), size.max(1.0)));
             painter.rect_filled(cell_rect, 0.0, egui::Color32::WHITE);
         }
+
+        if self.placing_mode {
+            if let Some(cursor_pos) = response.hover_pos() {
+                let world_coord = self.screen_to_world(cursor_pos);
+                
+                if let Some(preset) = self.presets.get(self.selected_preset_index) {
+                    if !preset.cells.is_empty() {
+                        let mut min_x = i32::MAX; let mut max_x = i32::MIN;
+                        let mut min_y = i32::MAX; let mut max_y = i32::MIN;
+                        for &(x, y) in &preset.cells {
+                            if x < min_x { min_x = x; } if x > max_x { max_x = x; }
+                            if y < min_y { min_y = y; } if y > max_y { max_y = y; }
+                        }
+                        let cx = (min_x + max_x) / 2;
+                        let cy = (min_y + max_y) / 2;
+
+                        for &(dx, dy) in &preset.cells {
+                            let pos = self.world_to_screen(Coord::new(
+                                world_coord.x + dx - cx, 
+                                world_coord.y + dy - cy
+                            ));
+                            let size = CELL_SIZE * self.zoom;
+                            let cell_rect = egui::Rect::from_min_size(pos, egui::vec2(size.max(1.0), size.max(1.0)));
+                            painter.rect_filled(cell_rect, 0.0, egui::Color32::from_rgba_unmultiplied(100, 255, 100, 100));
+                        }
+                    }
+                }
+                
+                let cursor_rect = egui::Rect::from_min_size(
+                    cursor_pos - egui::vec2(10.0, 10.0),
+                    egui::vec2(20.0, 20.0),
+                );
+                painter.rect_stroke(cursor_rect, 0.0, (2.0, egui::Color32::YELLOW));
+            }
+        }
     }
 
     fn draw_control_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("control_panel")
-            .default_width(250.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.heading("Клеточные автоматы");
-                ui.separator();
+        .default_width(280.0) 
+        .resizable(true)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.heading("Клеточные автоматы");
+                    ui.separator();
 
                 ui.group(|ui| {
                     ui.label("Управление");
@@ -202,12 +279,8 @@ impl CellularAutomataApp {
                     ui.label("🔍 Навигация");
                     ui.label(format!("Масштаб: {:.1}x", self.zoom));
                     ui.horizontal(|ui| {
-                        if ui.button("➖").clicked() {
-                            self.zoom = (self.zoom - 0.2).clamp(0.5, 5.0);
-                        }
-                        if ui.button("➕").clicked() {
-                            self.zoom = (self.zoom + 0.2).clamp(0.5, 5.0);
-                        }
+                        if ui.button("➖").clicked() { self.zoom = (self.zoom - 0.2).clamp(0.5, 5.0); }
+                        if ui.button("➕").clicked() { self.zoom = (self.zoom + 0.2).clamp(0.5, 5.0); }
                         if ui.button("🔄 Сброс").clicked() {
                             self.zoom = DEFAULT_ZOOM;
                             self.view_offset = egui::Vec2::ZERO;
@@ -218,22 +291,44 @@ impl CellularAutomataApp {
                 ui.separator();
 
                 ui.group(|ui| {
-                    ui.label("Пресеты");
+                    ui.horizontal(|ui| {
+                        ui.label("📌 Режим размещения");
+                        ui.checkbox(&mut self.placing_mode, "");
+                    });
+                    
+                    if self.placing_mode {
+                        ui.colored_label(egui::Color32::GREEN, "АКТИВЕН");
+                        ui.small("• Выберите пресет ниже");
+                        ui.small("• ЛКМ для размещения");
+                        ui.small("• ESC или P для выхода");
+                    } else {
+                        ui.small("Нажмите P или включите чекбокс");
+                    }
+                });
+
+                ui.separator();
+
+                ui.group(|ui| {
+                    let mode_label = if self.placing_mode { "📍 Пресеты (для размещения)" } else { "📋 Пресеты" };
+                    ui.label(mode_label);
+                    
                     egui::ScrollArea::vertical()
                         .max_height(150.0)
                         .show(ui, |ui| {
                             let mut selected_index = None;
                             for (i, preset) in self.presets.iter().enumerate() {
-                                if ui.selectable_label(i == self.selected_preset_index, &preset.name).clicked() {
+                                let is_selected = i == self.selected_preset_index;
+                                if ui.selectable_label(is_selected, &preset.name).clicked() {
                                     selected_index = Some(i);
                                 }
                             }
                             if let Some(index) = selected_index {
                                 self.select_preset(index);
                             }
-                        });
+                        });   
                     if let Some(preset) = self.presets.get(self.selected_preset_index) {
-                        ui.label(format!("{}", preset.description));
+                        ui.separator();
+                        ui.label(format!("📝 {}", preset.description));
                     }
                 });
 
@@ -247,11 +342,13 @@ impl CellularAutomataApp {
 
                 if self.show_controls {
                     ui.group(|ui| {
-                        ui.label("⌨️ Горячие клавиши");
+                        ui.label("Горячие клавиши");
                         ui.label("SPACE - Старт/Пауза");
                         ui.label("R - Сброс");
                         ui.label("N - След. шаг");
                         ui.label("H - Скрыть/Показать");
+                        ui.label("P - Режим размещения");
+                        ui.label("ESC - Выйти из размещения");
                         ui.label("Стрелки - Перемещение");
                         ui.label("+/- - Масштаб");
                         ui.label("Drag - Перемещение");
@@ -259,6 +356,7 @@ impl CellularAutomataApp {
                     });
                 }
             });
+        });    
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
@@ -273,14 +371,15 @@ impl CellularAutomataApp {
                 _ => self.send_command(EngineCommand::Start),
             }
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::R)) {
-            self.reset_with_preset();
+        if ctx.input(|i| i.key_pressed(egui::Key::R)) { self.reset_with_preset(); }
+        if ctx.input(|i| i.key_pressed(egui::Key::N)) { self.send_command(EngineCommand::Step); }
+        if ctx.input(|i| i.key_pressed(egui::Key::H)) { self.show_controls = !self.show_controls; }
+        
+        if ctx.input(|i| i.key_pressed(egui::Key::P)) {
+            self.placing_mode = !self.placing_mode;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::N)) {
-            self.send_command(EngineCommand::Step);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::H)) {
-            self.show_controls = !self.show_controls;
+        if self.placing_mode && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.placing_mode = false;
         }
 
         let pan_speed = 50.0 / self.zoom;

@@ -22,7 +22,7 @@ pub struct Chunk {
     rows: [u64; 64],
 }
 
-#[allow(dead_code)] // стоит здесь ибо импортируется в world.rs/ rule.rs. А в другие модули нет чтобы не летели попусту warning
+
 impl Chunk {
     pub fn new() -> Self {
         Self { rows: [0u64; 64] }
@@ -49,18 +49,10 @@ impl Chunk {
         self.rows.iter().all(|&r| r == 0)
     }
 
-    pub fn active_count(&self) -> usize {
-        self.rows.iter().map(|r| r.count_ones() as usize).sum()
-    }
-
     pub fn iter_active(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
         self.rows.iter().enumerate().flat_map(|(y, &row)| {
             BitIter(row).map(move |x| (x, y as i32))
         })
-    }
-
-    pub fn clear(&mut self) {
-        self.rows = [0u64; 64];
     }
 }
 
