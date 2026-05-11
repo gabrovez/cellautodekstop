@@ -19,6 +19,7 @@ struct CellularAutomataApp {
     presets: Vec<presets::Preset>,
     show_controls: bool,
     placing_mode: bool,
+    drawing_mode: bool, 
 }
 
 impl CellularAutomataApp {
@@ -50,6 +51,7 @@ impl CellularAutomataApp {
             presets: presets_list,
             show_controls: true,
             placing_mode: false,
+            drawing_mode: false,
         }
     }
 
@@ -135,19 +137,40 @@ impl CellularAutomataApp {
         }
     }
 
+    fn draw_cell_at_cursor(&mut self, cursor_pos: egui::Pos2) {
+        let world_coord = self.screen_to_world(cursor_pos);
+        let mut world = (*self.simulation.get_world()).clone();
+        world.set_cell(world_coord, true);
+        self.simulation.set_world(world);
+    }
+
     fn draw_simulation(&mut self, ui: &mut egui::Ui) {
         let (rect, response) = ui.allocate_exact_size(
             ui.available_size(),
             egui::Sense::click_and_drag(),
         );
 
-        if response.clicked_by(egui::PointerButton::Primary) && self.placing_mode {
-            if let Some(cursor_pos) = response.hover_pos() {
-                self.place_preset_at_cursor(cursor_pos);
+        if self.placing_mode && !self.drawing_mode {
+            if response.clicked_by(egui::PointerButton::Primary) {
+                if let Some(cursor_pos) = response.hover_pos() {
+                    self.place_preset_at_cursor(cursor_pos);
+                }
             }
-        }    
+        }
 
-        if response.dragged_by(egui::PointerButton::Primary) && !self.placing_mode {
+        if self.drawing_mode {
+            if response.dragged_by(egui::PointerButton::Secondary) || 
+               (response.hovered() && ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary))) {
+                if let Some(cursor_pos) = response.hover_pos() {
+                    self.draw_cell_at_cursor(cursor_pos);
+                }
+            }
+            if response.clicked_by(egui::PointerButton::Primary) {
+                self.drawing_mode = false;
+            }
+        }
+
+        if response.dragged_by(egui::PointerButton::Primary) && !self.placing_mode && !self.drawing_mode {
             self.view_offset += response.drag_delta();
         }
 
@@ -182,10 +205,19 @@ impl CellularAutomataApp {
             painter.rect_filled(cell_rect, 0.0, egui::Color32::WHITE);
         }
 
-        if self.placing_mode {
-            if let Some(cursor_pos) = response.hover_pos() {
-                let world_coord = self.screen_to_world(cursor_pos);
+        if let Some(cursor_pos) = response.hover_pos() {
+            let world_coord = self.screen_to_world(cursor_pos);
+            
+            if self.drawing_mode {
+                let pos = self.world_to_screen(world_coord);
+                let size = CELL_SIZE * self.zoom;
+                let cell_rect = egui::Rect::from_min_size(pos, egui::vec2(size.max(1.0), size.max(1.0)));
+                painter.rect_filled(cell_rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 255, 100, 150));
                 
+                let cursor_rect = egui::Rect::from_min_size(cursor_pos - egui::vec2(10.0, 10.0), egui::vec2(20.0, 20.0));
+                painter.rect_stroke(cursor_rect, 0.0, (2.0, egui::Color32::GREEN));
+            } 
+            else if self.placing_mode {
                 if let Some(preset) = self.presets.get(self.selected_preset_index) {
                     if !preset.cells.is_empty() {
                         let mut min_x = i32::MAX; let mut max_x = i32::MIN;
@@ -198,171 +230,150 @@ impl CellularAutomataApp {
                         let cy = (min_y + max_y) / 2;
 
                         for &(dx, dy) in &preset.cells {
-                            let pos = self.world_to_screen(Coord::new(
-                                world_coord.x + dx - cx, 
-                                world_coord.y + dy - cy
-                            ));
+                            let pos = self.world_to_screen(Coord::new(world_coord.x + dx - cx, world_coord.y + dy - cy));
                             let size = CELL_SIZE * self.zoom;
                             let cell_rect = egui::Rect::from_min_size(pos, egui::vec2(size.max(1.0), size.max(1.0)));
-                            painter.rect_filled(cell_rect, 0.0, egui::Color32::from_rgba_unmultiplied(100, 255, 100, 100));
+                            painter.rect_filled(cell_rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 255, 100, 100));
                         }
                     }
                 }
-                
-                let cursor_rect = egui::Rect::from_min_size(
-                    cursor_pos - egui::vec2(10.0, 10.0),
-                    egui::vec2(20.0, 20.0),
-                );
-                painter.rect_stroke(cursor_rect, 0.0, (2.0, egui::Color32::YELLOW));
             }
         }
     }
 
     fn draw_control_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("control_panel")
-        .default_width(280.0) 
-        .resizable(true)
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .show(ui, |ui| {
-                    ui.heading("Клеточные автоматы");
-                    ui.separator();
-
-                ui.group(|ui| {
-                    ui.label("Управление");
-                    let btn_size = egui::vec2(ui.available_width() * 0.5 - 4.0, 30.0);
-
-                    ui.horizontal(|ui| {
-                        if ui.add_sized(btn_size, egui::Button::new("▶️ Run")).clicked() {
-                            self.send_command(EngineCommand::Start);
-                        }
-                        if ui.add_sized(btn_size, egui::Button::new("⏹️ Stop")).clicked() {
-                            self.send_command(EngineCommand::Stop);
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        if ui.add_sized(btn_size, egui::Button::new("⏭️ Step")).clicked() {
-                            self.send_command(EngineCommand::Step);
-                        }
-                        if ui.add_sized(btn_size, egui::Button::new("🔄 Reset")).clicked() {
-                            self.reset_with_preset();
-                        }
-                    });
-                });
-
-                ui.separator();
-
-                ui.group(|ui| {
-                    ui.label("Скорость (TPS)");
-                    let mut tps = self.simulation.get_tps() as i32;
-                    ui.add(egui::Slider::new(&mut tps, 1..=60).text("тиков/сек"));
-                    let _ = self.command_tx.send(EngineCommand::SetSpeed(tps as u32));
-                });
-
-                ui.separator();
-
-                ui.group(|ui| {
-                    let state = self.simulation.get_state();
-                    let state_color = match state {
-                        EngineState::Running => egui::Color32::GREEN,
-                        EngineState::Paused => egui::Color32::YELLOW,
-                        EngineState::Stopped => egui::Color32::RED,
-                    };
-                    ui.colored_label(state_color, format!("Состояние: {:?}", state));
-                });
-
-                ui.separator();
-
-                ui.group(|ui| {
-                    ui.label("🔍 Навигация");
-                    ui.label(format!("Масштаб: {:.1}x", self.zoom));
-                    ui.horizontal(|ui| {
-                        if ui.button("➖").clicked() { self.zoom = (self.zoom - 0.2).clamp(0.5, 5.0); }
-                        if ui.button("➕").clicked() { self.zoom = (self.zoom + 0.2).clamp(0.5, 5.0); }
-                        if ui.button("🔄 Сброс").clicked() {
-                            self.zoom = DEFAULT_ZOOM;
-                            self.view_offset = egui::Vec2::ZERO;
-                        }
-                    });
-                });
-
-                ui.separator();
-
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("📌 Режим размещения");
-                        ui.checkbox(&mut self.placing_mode, "");
-                    });
-                    
-                    if self.placing_mode {
-                        ui.colored_label(egui::Color32::GREEN, "АКТИВЕН");
-                        ui.small("• Выберите пресет ниже");
-                        ui.small("• ЛКМ для размещения");
-                        ui.small("• ESC или P для выхода");
-                    } else {
-                        ui.small("Нажмите P или включите чекбокс");
-                    }
-                });
-
-                ui.separator();
-
-                ui.group(|ui| {
-                    let mode_label = if self.placing_mode { "📍 Пресеты (для размещения)" } else { "📋 Пресеты" };
-                    ui.label(mode_label);
-                    
-                    egui::ScrollArea::vertical()
-                        .max_height(150.0)
-                        .show(ui, |ui| {
-                            let mut selected_index = None;
-                            for (i, preset) in self.presets.iter().enumerate() {
-                                let is_selected = i == self.selected_preset_index;
-                                if ui.selectable_label(is_selected, &preset.name).clicked() {
-                                    selected_index = Some(i);
-                                }
-                            }
-                            if let Some(index) = selected_index {
-                                self.select_preset(index);
-                            }
-                        });   
-                    if let Some(preset) = self.presets.get(self.selected_preset_index) {
+            .default_width(280.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.heading("Клеточные автоматы");
                         ui.separator();
-                        ui.label(format!("📝 {}", preset.description));
-                    }
-                });
 
-                ui.separator();
+                        ui.group(|ui| {
+                            ui.label("Управление");
+                            let btn_size = egui::vec2(ui.available_width() * 0.5 - 4.0, 30.0);
+                            ui.horizontal(|ui| {
+                                if ui.add_sized(btn_size, egui::Button::new("▶️ Run")).clicked() { self.send_command(EngineCommand::Start); }
+                                if ui.add_sized(btn_size, egui::Button::new("️ Stop")).clicked() { self.send_command(EngineCommand::Stop); }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui.add_sized(btn_size, egui::Button::new("⏭️ Step")).clicked() { self.send_command(EngineCommand::Step); }
+                                if ui.add_sized(btn_size, egui::Button::new("🔄 Reset")).clicked() { self.reset_with_preset(); }
+                            });
+                        });
 
-                if ui.button("Центрировать вид").clicked() {
-                    self.center_on_world();
-                }
+                        ui.separator();
 
-                ui.separator();
+                        ui.group(|ui| {
+                            ui.label("Скорость (TPS)");
+                            let mut tps = self.simulation.get_tps() as i32;
+                            ui.add(egui::Slider::new(&mut tps, 1..=60).text("тиков/сек"));
+                            let _ = self.command_tx.send(EngineCommand::SetSpeed(tps as u32));
+                        });
 
-                if self.show_controls {
-                    ui.group(|ui| {
-                        ui.label("Горячие клавиши");
-                        ui.label("SPACE - Старт/Пауза");
-                        ui.label("R - Сброс");
-                        ui.label("N - След. шаг");
-                        ui.label("H - Скрыть/Показать");
-                        ui.label("P - Режим размещения");
-                        ui.label("ESC - Выйти из размещения");
-                        ui.label("Стрелки - Перемещение");
-                        ui.label("+/- - Масштаб");
-                        ui.label("Drag - Перемещение");
-                        ui.label("Колесо - Зум");
-                    });
-                }
+                        ui.separator();
+
+                        ui.group(|ui| {
+                            let state = self.simulation.get_state();
+                            let state_color = match state {
+                                EngineState::Running => egui::Color32::GREEN,
+                                EngineState::Paused => egui::Color32::YELLOW,
+                                EngineState::Stopped => egui::Color32::RED,
+                            };
+                            ui.colored_label(state_color, format!("Состояние: {:?}", state));
+                        });
+
+                        ui.separator();
+
+                        ui.group(|ui| {
+                            ui.label("🔍 Навигация");
+                            ui.label(format!("Масштаб: {:.1}x", self.zoom));
+                            ui.horizontal(|ui| {
+                                if ui.button("➖").clicked() { self.zoom = (self.zoom - 0.2).clamp(0.5, 5.0); }
+                                if ui.button("➕").clicked() { self.zoom = (self.zoom + 0.2).clamp(0.5, 5.0); }
+                                if ui.button("🔄 Сброс").clicked() { self.zoom = DEFAULT_ZOOM; self.view_offset = egui::Vec2::ZERO; }
+                            });
+                        });
+
+                        ui.separator();
+
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("📌 Режим размещения");
+                                ui.checkbox(&mut self.placing_mode, "");
+                            });
+                            if self.placing_mode {
+                                ui.colored_label(egui::Color32::GREEN, "АКТИВЕН (ЛКМ - поставить)");
+                                ui.small("• Выберите пресет ниже");
+                            }
+                        });
+
+                        ui.separator();
+
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("✏️ Режим рисования");
+                                ui.checkbox(&mut self.drawing_mode, "");
+                            });
+                            if self.drawing_mode {
+                                ui.colored_label(egui::Color32::GREEN, "АКТИВЕН (ПКМ - рисовать)");
+                                ui.small("• Зажмите ПКМ чтобы рисовать");
+                                ui.small("• ЛКМ чтобы выйти");
+                            }
+                        });
+
+                        ui.separator();
+
+                        ui.group(|ui| {
+                            let mode_label = if self.placing_mode { "📍 Пресеты (для размещения)" } else { " Пресеты" };
+                            ui.label(mode_label);
+                            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                                let mut selected_index = None;
+                                for (i, preset) in self.presets.iter().enumerate() {
+                                    if ui.selectable_label(i == self.selected_preset_index, &preset.name).clicked() {
+                                        selected_index = Some(i);
+                                    }
+                                }
+                                if let Some(index) = selected_index { self.select_preset(index); }
+                            });
+                            if let Some(preset) = self.presets.get(self.selected_preset_index) {
+                                ui.separator();
+                                ui.label(format!("📝 {}", preset.description));
+                            }
+                        });
+
+                        ui.separator();
+
+                        if ui.button("Центрировать вид").clicked() { self.center_on_world(); }
+
+                        ui.separator();
+
+                        if self.show_controls {
+                            ui.group(|ui| {
+                                ui.label("⌨️ Горячие клавиши");
+                                ui.label("SPACE - Старт/Пауза");
+                                ui.label("R - Сброс");
+                                ui.label("N - След. шаг");
+                                ui.label("H - Скрыть/Показать");
+                                ui.label("P - Режим размещения");
+                                ui.label("D - Режим рисования");
+                                ui.label("ESC - Выйти из режима");
+                                ui.label("Стрелки - Перемещение");
+                                ui.label("+/- - Масштаб");
+                                ui.label("Drag - Перемещение");
+                                ui.label("Колесо - Зум");
+                            });
+                        }
+                    }); 
             });
-        });    
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() {
-            return;
-        }
+        if ctx.wants_keyboard_input() { 
+            return; }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             let state = self.simulation.get_state();
@@ -377,9 +388,15 @@ impl CellularAutomataApp {
         
         if ctx.input(|i| i.key_pressed(egui::Key::P)) {
             self.placing_mode = !self.placing_mode;
+            if self.placing_mode { self.drawing_mode = false; }
         }
-        if self.placing_mode && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::D)) {
+            self.drawing_mode = !self.drawing_mode;
+            if self.drawing_mode { self.placing_mode = false; }
+        }
+        if (self.placing_mode || self.drawing_mode) && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.placing_mode = false;
+            self.drawing_mode = false;
         }
 
         let pan_speed = 50.0 / self.zoom;
